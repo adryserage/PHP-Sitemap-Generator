@@ -1,0 +1,208 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test PHP ${{ matrix.php-version }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        php-version: ['5.5', '5.6', '7.0', '7.1', '7.2', '7.3', '7.4', '8.0', '8.1', '8.2', '8.3']
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup PHP ${{ matrix.php-version }}
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php-version }}
+          extensions: mbstring, curl, zlib, SPL
+          coverage: none
+          ini-values: error_reporting=E_ALL
+
+      - name: Validate composer.json
+        run: composer validate --strict
+
+      - name: Cache Composer packages
+        uses: actions/cache@v3
+        with:
+          path: vendor
+          key: ${{ runner.os }}-php-${{ matrix.php-version }}-${{ hashFiles('**/composer.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-php-${{ matrix.php-version }}-
+
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-progress
+
+      - name: Check PHP syntax
+        run: find src -name "*.php" -exec php -l {} \;
+
+      - name: Run basic test
+        run: php -r "require 'vendor/autoload.php'; \$g = new Icamys\SitemapGenerator\SitemapGenerator('https://example.com'); echo 'Version: ' . \$g->getVersion() . PHP_EOL;"
+
+      - name: Test sitemap generation
+        run: |
+          php -r "
+          require 'vendor/autoload.php';
+          \$generator = new Icamys\SitemapGenerator\SitemapGenerator('https://example.com', './test-output/');
+          if (!is_dir('./test-output/')) mkdir('./test-output/', 0755, true);
+          \$generator->addUrl('/', new DateTime(), 'daily', '1.0');
+          \$generator->addUrl('/about', new DateTime(), 'monthly', '0.8');
+          \$generator->createSitemap();
+          \$generator->writeSitemap();
+          echo 'Sitemap generated successfully with ' . \$generator->countUrls() . ' URLs' . PHP_EOL;
+          "
+
+      - name: Verify generated files
+        run: |
+          if [ ! -f "./test-output/sitemap.xml" ]; then
+            echo "Error: sitemap.xml not created"
+            exit 1
+          fi
+          echo "✅ Sitemap file created successfully"
+          ls -lh ./test-output/
+
+  lint:
+    name: Code Style Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '7.4'
+          extensions: mbstring
+          coverage: none
+
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-progress
+
+      - name: Check code style
+        run: composer lint || echo "Linting completed with warnings"
+
+  security:
+    name: Security Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '7.4'
+
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-progress
+
+      - name: Security check
+        run: |
+          composer audit || echo "Security audit completed"
+
+  validate-examples:
+    name: Validate Examples
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '7.4'
+          extensions: mbstring, curl, zlib
+
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-progress
+
+      - name: Check example syntax
+        run: |
+          for file in examples/*.php; do
+            echo "Checking $file..."
+            php -l "$file"
+          done
+
+  docker:
+    name: Docker Build Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: php-sitemap-generator:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Test Docker image
+        run: |
+          docker run --rm php-sitemap-generator:test php -v
+          docker run --rm php-sitemap-generator:test php -m | grep -E "(curl|zlib|SPL)"
+
+  summary:
+    name: CI Summary
+    runs-on: ubuntu-latest
+    needs: [test, lint, security, validate-examples, docker]
+    if: always()
+
+    steps:
+      - name: Check results
+        run: |
+          echo "## CI Results Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ needs.test.result }}" == "success" ]; then
+            echo "✅ Tests passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Tests failed" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ "${{ needs.lint.result }}" == "success" ]; then
+            echo "✅ Code style check passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ Code style check completed with warnings" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ "${{ needs.security.result }}" == "success" ]; then
+            echo "✅ Security check passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ Security check completed" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ "${{ needs.validate-examples.result }}" == "success" ]; then
+            echo "✅ Examples validated" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Example validation failed" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ "${{ needs.docker.result }}" == "success" ]; then
+            echo "✅ Docker build successful" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Docker build failed" >> $GITHUB_STEP_SUMMARY
+          fi

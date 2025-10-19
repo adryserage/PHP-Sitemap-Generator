@@ -1,0 +1,28 @@
+version: "3.8"
+
+services:
+  php-sitemap:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: php-sitemap-generator
+    ports:
+      - "8000:80"
+    volumes:
+      - ./:/var/www/html
+      - ./output:/var/www/html/output
+    environment:
+      - PHP_MEMORY_LIMIT=256M
+      - PHP_UPLOAD_MAX_FILESIZE=50M
+      - PHP_POST_MAX_SIZE=50M
+    restart: unless-stopped
+    networks:
+      - sitemap-network
+
+networks:
+  sitemap-network:
+    driver: bridge
+
+volumes:
+  output:
+    driver: local

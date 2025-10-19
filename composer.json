@@ -1,8 +1,18 @@
 {
   "name": "icamys/php-sitemap-generator",
-  "version": "1.0.1",
-  "description": "Simple PHP sitemap generator.",
-  "keywords": ["php", "sitemap", "generator", "psr-1", "psr-2", "psr-4"],
+  "version": "2.0.0",
+  "description": "Simple yet powerful PHP sitemap generator following sitemaps.org protocol. Supports multiple sitemaps, sitemap index files, and GZip compression.",
+  "keywords": [
+    "php",
+    "sitemap",
+    "generator",
+    "seo",
+    "xml",
+    "sitemap-generator",
+    "psr-4",
+    "robots-txt",
+    "search-engine"
+  ],
   "homepage": "https://github.com/icamys/php-sitemap-generator",
   "type": "library",
   "license": "MIT",
@@ -11,14 +21,41 @@
     {
       "name": "Prisacari Dmitrii",
       "email": "prisacari.dmitrii@gmail.com",
-      "homepage": "http://github.com/icamys/"
+      "homepage": "https://github.com/icamys/",
+      "role": "Developer"
     }
   ],
   "require": {
     "php": ">=5.5.0",
     "ext-SPL": "*"
   },
+  "require-dev": {
+    "phpunit/phpunit": "^4.8 || ^5.0",
+    "squizlabs/php_codesniffer": "^3.0"
+  },
+  "suggest": {
+    "ext-curl": "Required for submitting sitemaps to search engines",
+    "ext-zlib": "Required for GZip compression support",
+    "ext-mbstring": "Recommended for accurate URL length validation"
+  },
   "autoload": {
-    "psr-4": {"Icamys\\SitemapGenerator\\": "src/"}
+    "psr-4": {
+      "Icamys\\SitemapGenerator\\": "src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "Icamys\\SitemapGenerator\\Tests\\": "tests/"
+    }
+  },
+  "scripts": {
+    "test": "phpunit",
+    "lint": "phpcs --standard=PSR2 src/",
+    "fix": "phpcbf --standard=PSR2 src/"
+  },
+  "support": {
+    "issues": "https://github.com/icamys/php-sitemap-generator/issues",
+    "source": "https://github.com/icamys/php-sitemap-generator",
+    "docs": "https://github.com/icamys/php-sitemap-generator/tree/main/docs"
   }
 }

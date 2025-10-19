@@ -1,0 +1,186 @@
+name: Version and Release
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'examples/**'
+  workflow_dispatch:
+    inputs:
+      version_type:
+        description: 'Version bump type'
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+        default: 'patch'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  version-bump:
+    runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+    outputs:
+      version: ${{ steps.new_version.outputs.version }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '7.4'
+          extensions: mbstring, curl, zlib
+          coverage: none
+
+      - name: Install dependencies
+        run: composer install --no-dev --no-interaction --prefer-dist
+
+      - name: Get current version
+        id: current_version
+        run: |
+          CURRENT_VERSION=$(grep -oP '(?<=private \$classVersion = ")[^"]*' src/SitemapGenerator.php)
+          echo "version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "Current version: $CURRENT_VERSION"
+
+      - name: Determine version bump type
+        id: bump_type
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "type=${{ github.event.inputs.version_type }}" >> $GITHUB_OUTPUT
+          else
+            # Auto-detect from commit messages
+            COMMITS=$(git log --pretty=format:"%s" ${{ github.event.before }}..${{ github.sha }})
+            if echo "$COMMITS" | grep -iE "^(breaking|major):"; then
+              echo "type=major" >> $GITHUB_OUTPUT
+            elif echo "$COMMITS" | grep -iE "^(feat|feature):"; then
+              echo "type=minor" >> $GITHUB_OUTPUT
+            else
+              echo "type=patch" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Calculate new version
+        id: new_version
+        run: |
+          CURRENT="${{ steps.current_version.outputs.version }}"
+          TYPE="${{ steps.bump_type.outputs.type }}"
+
+          IFS='.' read -ra VERSION_PARTS <<< "$CURRENT"
+          MAJOR="${VERSION_PARTS[0]}"
+          MINOR="${VERSION_PARTS[1]}"
+          PATCH="${VERSION_PARTS[2]}"
+
+          case $TYPE in
+            major)
+              MAJOR=$((MAJOR + 1))
+              MINOR=0
+              PATCH=0
+              ;;
+            minor)
+              MINOR=$((MINOR + 1))
+              PATCH=0
+              ;;
+            patch)
+              PATCH=$((PATCH + 1))
+              ;;
+          esac
+
+          NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "New version: $NEW_VERSION"
+
+      - name: Update version in source
+        run: |
+          NEW_VERSION="${{ steps.new_version.outputs.version }}"
+          sed -i "s/private \$classVersion = \".*\"/private \$classVersion = \"$NEW_VERSION\"/" src/SitemapGenerator.php
+          sed -i "s/\"version\": \".*\"/\"version\": \"$NEW_VERSION\"/" composer.json
+          echo "Version updated to $NEW_VERSION"
+
+      - name: Update CHANGELOG
+        run: |
+          NEW_VERSION="${{ steps.new_version.outputs.version }}"
+          TODAY=$(date +%Y-%m-%d)
+
+          # Create new changelog entry
+          cat << EOF > /tmp/changelog_entry.txt
+          
+          ## [$NEW_VERSION] - $TODAY
+          
+          ### Changed
+          - Version bump to $NEW_VERSION
+          - Automated release
+          
+          EOF
+          
+          sed -i "/## \[Unreleased\]/r /tmp/changelog_entry.txt" CHANGELOG.md
+
+      - name: Commit version bump
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add src/SitemapGenerator.php composer.json CHANGELOG.md
+          git commit -m "chore: bump version to ${{ steps.new_version.outputs.version }} [skip ci]"
+          git push
+
+      - name: Create Git tag
+        run: |
+          git tag "v${{ steps.new_version.outputs.version }}"
+          git push origin "v${{ steps.new_version.outputs.version }}"
+
+      - name: Generate release notes
+        id: release_notes
+        run: |
+          NEW_VERSION="${{ steps.new_version.outputs.version }}"
+          CURRENT_VERSION="${{ steps.current_version.outputs.version }}"
+
+          # Extract changelog for this version
+          NOTES=$(awk "/## \[$NEW_VERSION\]/,/## \[/" CHANGELOG.md | grep -v "## \[" | head -n -1)
+
+          # Get commits since last version
+          COMMITS=$(git log v$CURRENT_VERSION..HEAD --pretty=format:"- %s (%h)" --no-merges 2>/dev/null || git log --pretty=format:"- %s (%h)" -10)
+
+          {
+            echo "NOTES<<EOF"
+            echo "## What's Changed"
+            echo ""
+            echo "$NOTES"
+            echo ""
+            echo "## Commits"
+            echo "$COMMITS"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ steps.new_version.outputs.version }}
+          release_name: Release v${{ steps.new_version.outputs.version }}
+          body: ${{ steps.release_notes.outputs.NOTES }}
+          draft: false
+          prerelease: false
+
+  notify:
+    needs: version-bump
+    runs-on: ubuntu-latest
+    if: success()
+
+    steps:
+      - name: Notification
+        run: |
+          echo "✅ Version bumped and released successfully"
+          echo "New version: ${{ needs.version-bump.outputs.version }}"

@@ -1,0 +1,165 @@
+name: Backup Branch on Update
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  create-backup:
+    runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.head_commit.message, '[skip backup]') }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+
+      - name: Generate backup branch name
+        id: backup_name
+        run: |
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          BRANCH_NAME="backup/main-$TIMESTAMP"
+          echo "branch=$BRANCH_NAME" >> $GITHUB_OUTPUT
+          echo "timestamp=$TIMESTAMP" >> $GITHUB_OUTPUT
+          echo "Backup branch name: $BRANCH_NAME"
+
+      - name: Get commit info
+        id: commit_info
+        run: |
+          COMMIT_SHA=$(git rev-parse HEAD)
+          COMMIT_MSG=$(git log -1 --pretty=%B)
+          COMMIT_AUTHOR=$(git log -1 --pretty=%an)
+
+          echo "sha=$COMMIT_SHA" >> $GITHUB_OUTPUT
+          echo "message<<EOF" >> $GITHUB_OUTPUT
+          echo "$COMMIT_MSG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          echo "author=$COMMIT_AUTHOR" >> $GITHUB_OUTPUT
+
+      - name: Create backup branch
+        run: |
+          BACKUP_BRANCH="${{ steps.backup_name.outputs.branch }}"
+          git checkout -b "$BACKUP_BRANCH"
+          git push origin "$BACKUP_BRANCH"
+          echo "✅ Created backup branch: $BACKUP_BRANCH"
+
+      - name: Create backup tag
+        run: |
+          TIMESTAMP="${{ steps.backup_name.outputs.timestamp }}"
+          TAG_NAME="backup-$TIMESTAMP"
+          git tag -a "$TAG_NAME" -m "Backup created at $TIMESTAMP"
+          git push origin "$TAG_NAME"
+          echo "✅ Created backup tag: $TAG_NAME"
+
+      - name: Update backup index
+        run: |
+          BACKUP_BRANCH="${{ steps.backup_name.outputs.branch }}"
+          COMMIT_SHA="${{ steps.commit_info.outputs.sha }}"
+          TIMESTAMP="${{ steps.backup_name.outputs.timestamp }}"
+          COMMIT_AUTHOR="${{ steps.commit_info.outputs.author }}"
+
+          # Create or update backup index file
+          mkdir -p .github/backups
+          BACKUP_FILE=".github/backups/backup-index.md"
+
+          if [ ! -f "$BACKUP_FILE" ]; then
+            echo "# Backup Index" > "$BACKUP_FILE"
+            echo "" >> "$BACKUP_FILE"
+            echo "This file tracks all backup branches created automatically." >> "$BACKUP_FILE"
+            echo "" >> "$BACKUP_FILE"
+            echo "## Backups" >> "$BACKUP_FILE"
+            echo "" >> "$BACKUP_FILE"
+            echo "| Date | Branch | Commit | Author |" >> "$BACKUP_FILE"
+            echo "|------|--------|--------|--------|" >> "$BACKUP_FILE"
+          fi
+
+          # Add new backup entry
+          echo "| $TIMESTAMP | \`$BACKUP_BRANCH\` | \`${COMMIT_SHA:0:7}\` | $COMMIT_AUTHOR |" >> "$BACKUP_FILE"
+
+          # Commit the index update (only if on main branch)
+          git checkout main
+          git add "$BACKUP_FILE"
+          git commit -m "docs: update backup index [skip backup]" || echo "No changes to commit"
+          git push origin main || echo "Nothing to push"
+
+      - name: Cleanup old backups
+        run: |
+          echo "Checking for old backups to cleanup..."
+
+          # Keep only the last 10 backup branches
+          BACKUP_BRANCHES=$(git branch -r | grep 'origin/backup/main-' | sort -r | tail -n +11)
+
+          if [ -n "$BACKUP_BRANCHES" ]; then
+            echo "Found old backups to delete:"
+            echo "$BACKUP_BRANCHES"
+
+            for BRANCH in $BACKUP_BRANCHES; do
+              BRANCH_NAME=$(echo $BRANCH | sed 's|origin/||')
+              git push origin --delete "$BRANCH_NAME" || echo "Failed to delete $BRANCH_NAME"
+              echo "Deleted old backup: $BRANCH_NAME"
+            done
+          else
+            echo "No old backups to cleanup"
+          fi
+
+      - name: Summary
+        run: |
+          echo "## Backup Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ **Backup created successfully**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch**: \`${{ steps.backup_name.outputs.branch }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit**: \`${{ steps.commit_info.outputs.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Author**: ${{ steps.commit_info.outputs.author }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Timestamp**: ${{ steps.backup_name.outputs.timestamp }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Commit Message" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.commit_info.outputs.message }}" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+  verify-backup:
+    needs: create-backup
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify backup branches exist
+        run: |
+          echo "Verifying backup branches..."
+          BACKUP_COUNT=$(git branch -r | grep -c 'origin/backup/main-' || echo "0")
+          echo "Found $BACKUP_COUNT backup branches"
+
+          if [ "$BACKUP_COUNT" -gt 0 ]; then
+            echo "✅ Backup branches verified"
+            echo "Recent backups:"
+            git branch -r | grep 'origin/backup/main-' | sort -r | head -5
+          else
+            echo "⚠️ No backup branches found"
+            exit 1
+          fi
+
+      - name: Backup verification summary
+        run: |
+          echo "## Backup Verification" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ **Backup verification completed**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          BACKUP_COUNT=$(git branch -r | grep -c 'origin/backup/main-' || echo "0")
+          echo "- **Total backups**: $BACKUP_COUNT" >> $GITHUB_STEP_SUMMARY
