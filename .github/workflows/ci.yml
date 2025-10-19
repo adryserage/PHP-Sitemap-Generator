@@ -51,7 +51,8 @@ jobs:
         run: find src -name "*.php" -exec php -l {} \;
 
       - name: Run basic test
-        run: php -r "require 'vendor/autoload.php'; \$g = new Icamys\SitemapGenerator\SitemapGenerator('https://example.com'); echo 'Version: ' . \$g->getVersion() . PHP_EOL;"
+        run: |
+          php -r "require 'vendor/autoload.php'; \$g = new Icamys\SitemapGenerator\SitemapGenerator('https://example.com'); echo 'Version: ' . \$g->getVersion() . PHP_EOL;"
 
       - name: Test sitemap generation
         run: |
